@@ -2,6 +2,19 @@
 #include <iostream>
 #include "gpu-new-forward.h"
 
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+   if (code != cudaSuccess) 
+   {
+      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+      if (abort) exit(code);
+   }
+}
+
+
+#define TILE_WIDTH 16
+
 __global__ void conv_forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
 {
     /*
@@ -23,8 +36,8 @@ __global__ void conv_forward_kernel(float *y, const float *x, const float *k, co
 
     const int H_out = H - K + 1;
     const int W_out = W - K + 1;
-    (void)H_out; // silence declared but never referenced warning. remove this line when you start working
-    (void)W_out; // silence declared but never referenced warning. remove this line when you start working
+    // (void)H_out; // silence declared but never referenced warning. remove this line when you start working
+    // (void)W_out; // silence declared but never referenced warning. remove this line when you start working
 
     // We have some nice #defs for you below to simplify indexing. Feel free to use them, or create your own.
     // An example use of these macros:
@@ -36,7 +49,33 @@ __global__ void conv_forward_kernel(float *y, const float *x, const float *k, co
 #define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 
     // Insert your GPU convolution kernel code here
-   
+
+    const unsigned int W_grid  = ceil(W_out / (float) TILE_WIDTH);
+
+    // int b = blockIdx.z * TILE_WIDTH + threadIdx.z;
+    
+    int b = blockIdx.x;
+    int m = blockIdx.y;
+
+    int h = (blockIdx.z / W_grid) * blockDim.y + threadIdx.y;
+    int w = (blockIdx.z % W_grid) * blockDim.x + threadIdx.x;
+
+    if(h < H_out && w < W_out)
+    {
+        float acc = 0.0f;
+        
+        for(int c =  0; c < C; c++){
+            for(int p = 0; p < K; p++){
+                for(int q = 0; q < K; q++){
+
+                    if(h + p < H && w + q < W)
+                        acc += x4d(b, c, h + p, w + q) * k4d(m, c, p, q);
+                }
+            }
+        }
+    
+        y4d(b, m, h, w) = acc;   
+    }
 
 #undef y4d
 #undef x4d
@@ -52,20 +91,13 @@ __host__ void GPUInterface::conv_forward_gpu_prolog(const float *host_y, const f
     //  which are passed to the other two functions.
 
     // Useful snippet for error checking
-    // cudaError_t error = cudaGetLastError();
-    // if(error != cudaSuccess)
-    // {
-    //     std::cout<<"CUDA error: "<<cudaGetErrorString(error)<<std::endl;
-    //     exit(-1);
-    // }
-
     
     const int H_out = H - K + 1;
     const int W_out = W - K + 1;
 
     const unsigned int sizeX = B * C * H * W * sizeof(float);
     const unsigned int sizeY = B * M * H_out * W_out * sizeof(float);
-    const unsigned int sizeK =  K * K * sizeof(float);
+    const unsigned int sizeK = M * C * K * K * sizeof(float);
 
     cudaMalloc((void **)device_x_ptr, sizeX);
     cudaMalloc((void **)device_y_ptr, sizeY);
@@ -79,7 +111,18 @@ __host__ void GPUInterface::conv_forward_gpu_prolog(const float *host_y, const f
 __host__ void GPUInterface::conv_forward_gpu(float *device_y, const float *device_x, const float *device_k, const int B, const int M, const int C, const int H, const int W, const int K)
 {
     // Set the kernel dimensions and call the kernel
+    const unsigned int H_out = H - K + 1;
+    const unsigned int W_out = W - K + 1;
 
+    const unsigned int W_grid  = ceil(W_out / (float) TILE_WIDTH);
+    const unsigned int H_grid = ceil(H_out / (float) TILE_WIDTH);
+
+    const unsigned Y = H_grid * W_grid;
+
+    dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
+    dim3 gridDim( B, M, Y);
+
+    conv_forward_kernel<<<gridDim,  blockDim >>>(device_y, device_x, device_k, B, M , C, H, W, K);
 }
 
 
@@ -91,7 +134,6 @@ __host__ void GPUInterface::conv_forward_gpu_epilog(float *host_y, float *device
     // Copy the output back to host
     const unsigned int sizeY = B * M * H_out * W_out * sizeof(float);
     cudaMemcpy(host_y, device_y, sizeY, cudaMemcpyDeviceToHost);
-    
 
     // Free device memory
 
