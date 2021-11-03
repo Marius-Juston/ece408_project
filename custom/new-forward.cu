@@ -59,6 +59,20 @@ __host__ void GPUInterface::conv_forward_gpu_prolog(const float *host_y, const f
     //     exit(-1);
     // }
 
+    
+    const int H_out = H - K + 1;
+    const int W_out = W - K + 1;
+
+    const unsigned int sizeX = B * C * H * W * sizeof(float);
+    const unsigned int sizeY = B * M * H_out * W_out * sizeof(float);
+    const unsigned int sizeK =  K * K * sizeof(float);
+
+    cudaMalloc((void **)device_x_ptr, sizeX);
+    cudaMalloc((void **)device_y_ptr, sizeY);
+    cudaMalloc((void **)device_k_ptr, sizeK);
+
+    cudaMemcpy(*device_x_ptr, host_x, sizeX, cudaMemcpyHostToDevice);
+    cudaMemcpy(*device_k_ptr, host_k, sizeK, cudaMemcpyHostToDevice);
 }
 
 
@@ -71,10 +85,19 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_y, const float *devic
 
 __host__ void GPUInterface::conv_forward_gpu_epilog(float *host_y, float *device_y, float *device_x, float *device_k, const int B, const int M, const int C, const int H, const int W, const int K)
 {
+    const int H_out = H - K + 1;
+    const int W_out = W - K + 1;
+
     // Copy the output back to host
+    const unsigned int sizeY = B * M * H_out * W_out * sizeof(float);
+    cudaMemcpy(host_y, device_y, sizeY, cudaMemcpyDeviceToHost);
+    
 
     // Free device memory
 
+    cudaFree(device_x);
+    cudaFree(device_y);
+    cudaFree(device_k);
 }
 
 
