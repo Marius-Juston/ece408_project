@@ -15,7 +15,9 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 
 #define TILE_WIDTH 16
 
-__global__ void conv_forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
+__constant__ float Mc[3136];
+
+__global__ void conv_forward_kernel(float *y, const float *x, const int B, const int M, const int C, const int H, const int W, const int K)
 {
     /*
     Modify this function to implement the forward pass described in Chapter 16.
@@ -46,7 +48,7 @@ __global__ void conv_forward_kernel(float *y, const float *x, const float *k, co
 
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
 #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
-#define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
+#define k4d(i3, i2, i1, i0) Mc[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 
     // Insert your GPU convolution kernel code here
 
@@ -101,10 +103,11 @@ __host__ void GPUInterface::conv_forward_gpu_prolog(const float *host_y, const f
 
     cudaMalloc((void **)device_x_ptr, sizeX);
     cudaMalloc((void **)device_y_ptr, sizeY);
-    cudaMalloc((void **)device_k_ptr, sizeK);
 
     cudaMemcpy(*device_x_ptr, host_x, sizeX, cudaMemcpyHostToDevice);
-    cudaMemcpy(*device_k_ptr, host_k, sizeK, cudaMemcpyHostToDevice);
+    cudaMemcpyToSymbol(Mc, host_k, sizeK, 0 , cudaMemcpyHostToDevice);
+
+    std::cout << sizeK << " " << K << std::endl;
 }
 
 
@@ -122,7 +125,7 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_y, const float *devic
     dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
     dim3 gridDim( B, M, Y);
 
-    conv_forward_kernel<<<gridDim,  blockDim >>>(device_y, device_x, device_k, B, M , C, H, W, K);
+    conv_forward_kernel<<<gridDim,  blockDim >>>(device_y, device_x,  B, M , C, H, W, K);
 }
 
 
@@ -139,7 +142,6 @@ __host__ void GPUInterface::conv_forward_gpu_epilog(float *host_y, float *device
 
     cudaFree(device_x);
     cudaFree(device_y);
-    cudaFree(device_k);
 }
 
 
