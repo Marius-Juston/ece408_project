@@ -14,6 +14,10 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 
 
 #define TILE_WIDTH 16
+#define MASK_WIDTH 7
+#define MASK_RADIUS MASK_WIDTH / 2
+#define SHARE_WIDTH TILE_WIDTH + MASK_RADIUS * 2
+
 
 __constant__ float Mc[3136];
 
@@ -55,28 +59,84 @@ __global__ void conv_forward_kernel(float *y, const float *x, const int B, const
     const unsigned int W_grid  = ceil(W_out / (float) TILE_WIDTH);
 
     // int b = blockIdx.z * TILE_WIDTH + threadIdx.z;
-    
+
+    int ty = threadIdx.y;
+    int tx = threadIdx.x;
+
     int b = blockIdx.x;
     int m = blockIdx.y;
 
-    int h = (blockIdx.z / W_grid) * blockDim.y + threadIdx.y;
-    int w = (blockIdx.z % W_grid) * blockDim.x + threadIdx.x;
+    int h = (blockIdx.z / W_grid) * blockDim.y + ty;
+    int w = (blockIdx.z % W_grid) * blockDim.x + tx;
 
-    if(h < H_out && w < W_out)
-    {
-        float acc = 0.0f;
-        
-        for(int c =  0; c < C; c++){
-            for(int p = 0; p < K; p++){
-                for(int q = 0; q < K; q++){
+    __shared__ float tile[4][SHARE_WIDTH][SHARE_WIDTH];
 
-                    if(h + p < H && w + q < W)
-                        acc += x4d(b, c, h + p, w + q) * k4d(m, c, p, q);
+    if(w >= 0 && w < W && h >=0 && h < H){
+        for (int c = 0 ; c < C; ++c)
+            tile[c][ty][tx] = x4d(b, c, h, w);
+    }
+    else{
+        for (int c = 0 ; c < C; ++c)
+            tile[c][ty][tx] = 0.0f;
+    }
+
+    if(tx < K - 1){
+         int temp_x =  w + TILE_WIDTH;
+
+        if(temp_x >= 0 && temp_x < W && h >= 0 && h < H ){
+            for (int c = 0 ; c < C; ++c)
+                tile[c][ty][tx + TILE_WIDTH] = x4d(b, c, h, temp_x);
+        }
+        else{
+            
+            for (int c = 0 ; c < C; ++c)
+                tile[c][ty][tx + TILE_WIDTH] = 0.0f;
+        }
+    }
+    if(ty < K - 1){
+         int temp_y =  h + TILE_WIDTH;
+
+        if( temp_y >= 0 && temp_y < H && w >= 0 && w < W){
+            for (int c = 0 ; c < C; ++c)
+                tile[c][ty+ TILE_WIDTH][tx ] = x4d(b, c, temp_y, w);
+        }
+        else{
+            
+            for (int c = 0 ; c < C; ++c)
+                tile[c][ty+ TILE_WIDTH][tx ] = 0.0f;
+        }
+    }
+
+    if(tx < K - 1 && ty < K - 1){
+        int temp_x =  w + TILE_WIDTH;
+        int temp_y = h + TILE_WIDTH;
+
+        if(temp_y >= 0 && temp_y < H && temp_x >= 0 && temp_x < W){
+            for (int c = 0 ; c < C; ++c)
+                tile[c][ty + TILE_WIDTH][tx + TILE_WIDTH] = x4d(b, c, temp_y, temp_x);
+        }
+        else{
+            for (int c = 0 ; c < C; ++c)
+                tile[c][ty + TILE_WIDTH][tx + TILE_WIDTH] = 0.0f;
+        }
+    }
+     __syncthreads();
+
+    
+    if (w < W_out && h < H_out){
+        float convolution = 0.0f;
+        for (int c = 0; c < C; ++c)
+        {
+            for (int y_ = 0; y_ < K; ++y_)
+            {
+                for (int x_ = 0; x_ < K; ++x_)
+                {
+                    convolution +=  k4d(m, c, y_, x_) * tile[c][ty + y_][tx + x_];
                 }
             }
         }
-    
-        y4d(b, m, h, w) = acc;   
+
+        y4d(b, m, h, w)  = convolution;
     }
 
 #undef y4d
@@ -107,7 +167,7 @@ __host__ void GPUInterface::conv_forward_gpu_prolog(const float *host_y, const f
     cudaMemcpy(*device_x_ptr, host_x, sizeX, cudaMemcpyHostToDevice);
     cudaMemcpyToSymbol(Mc, host_k, sizeK, 0 , cudaMemcpyHostToDevice);
 
-    std::cout << sizeK << " " << K << std::endl;
+    std::cout << sizeK << " " << C << " " << K << std::endl;
 }
 
 
