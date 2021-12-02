@@ -52,13 +52,13 @@ __global__ void conv_forward_kernel(float *y, const float *x, const int B, const
 
     // Insert your GPU convolution kernel code here
 
-    int ty = threadIdx.y;
-    int tx = threadIdx.x;
+    const unsigned int ty = threadIdx.y;
+    const unsigned int tx = threadIdx.x;
 
-    int b = blockIdx.z;
+    const unsigned int b = blockIdx.z;
 
-    int row = blockIdx.y * TILE_WIDTH + ty;
-    int col = blockIdx.x * TILE_WIDTH + tx;
+    const unsigned int row = blockIdx.y * TILE_WIDTH + ty;
+    const unsigned int col = blockIdx.x * TILE_WIDTH + tx;
 
     __shared__ float rowShared[TILE_WIDTH][TILE_WIDTH];
     __shared__ float colShared[TILE_WIDTH][TILE_WIDTH];
@@ -69,55 +69,51 @@ __global__ void conv_forward_kernel(float *y, const float *x, const int B, const
 
     float sum = 0.0;
 
+    const bool compute = row < M && col < W_out * H_out; 
+
+    const unsigned int X_h = col / W_out;
+    const unsigned int X_w = col % W_out;
     
     for (int i = 0; i < numBlocks; ++i){
-        int tileCol = i * TILE_WIDTH + tx; // For the kernel
-        int tileRow = i * TILE_WIDTH + ty; // for the input
+        const unsigned int tileCol = i * TILE_WIDTH + tx; // For the kernel
+        const unsigned int tileRow = i * TILE_WIDTH + ty; // for the input
 
         // input matrix shared memeory
 
-        int X_c = tileRow / (K * K);
-
-        int temp = tileRow % (K * K) ;
-        int X_p =  temp / K;
-        int X_q = temp % K;
-        
-        int X_h = col / W_out;
-        int X_w = col % W_out;
-
-        int K_m = row;
-        int K_c = tileCol / (K * K);
-        int K_h = (tileCol % (K * K)) / K;
-        int K_w = (tileCol % (K * K)) % K;
-
         if(tileRow < W_BASE && col < H_out * W_out){
-            colShared[ty][tx] = x4d(b, X_c, X_h + X_p , X_w + X_q);
+            const unsigned int temp = tileRow % (K * K) ;
+            const unsigned int X_p =  temp / K;
+            const unsigned int X_q = temp % K;
+
+            colShared[ty][tx] = x4d(b, tileRow / (K * K), X_h + X_p , X_w + X_q);
         }else{
             colShared[ty][tx] = 0.0f;            
         }
 
-        if(tileCol < W_BASE && K_m < M){
-            rowShared[ty][tx] = k4d(K_m , K_c, K_h, K_w);
+        if(tileCol < W_BASE && row < M){
+            const unsigned int K_c = tileCol / (K * K);
+
+            const unsigned int temp = (tileCol % (K * K)); 
+            const unsigned int K_h =  temp / K;
+            const unsigned int K_w = temp % K;
+
+            rowShared[ty][tx] = k4d(row , K_c, K_h, K_w);
         }else{
             rowShared[ty][tx] = 0.0f;
         }
 
         __syncthreads();
 
-        for(int k = 0; k < TILE_WIDTH; ++k){
-            sum += colShared[k][tx] * rowShared[ty][k];            
+        if(compute){
+            for(int k = 0; k < TILE_WIDTH; ++k){
+                sum += colShared[k][tx] * rowShared[ty][k];            
+            }
         }
-
         __syncthreads();
     }
 
-    int new_b = b;
-    int new_m = row;
-    int new_h = col / W_out;
-    int new_w = col % W_out;
-
-    if(new_m < M && col < W_out * H_out){
-        y4d(new_b, new_m, new_h, new_w) = sum;
+    if(compute){        
+        y4d(b, row, X_h, X_w) = sum;
     }
 
 
