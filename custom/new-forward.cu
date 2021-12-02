@@ -56,21 +56,15 @@ __global__ void conv_forward_kernel(float *y, const float *x, const int B, const
 
     // Insert your GPU convolution kernel code here
 
-    const unsigned int W_grid  = ceil(W_out / (float) TILE_WIDTH);
-
-    // int b = blockIdx.z * TILE_WIDTH + threadIdx.z;
-
     int ty = threadIdx.y;
     int tx = threadIdx.x;
 
-    int b = blockIdx.x;
-    int m = blockIdx.y;
+    int b = blockIdx.z;
 
-    int h = (blockIdx.z / W_grid) * blockDim.y + ty;
-    int w = (blockIdx.z % W_grid) * blockDim.x + tx;
+    int row = blockIdx.y * TILE_WIDTH + ty;
+    int col = blockIdx.x * TILE_WIDTH + tx;
 
     __shared__ float rowShared[TILE_WIDTH][TILE_WIDTH];
-
     __shared__ float colShared[TILE_WIDTH][TILE_WIDTH];
 
     const unsigned int numBlocks = ceil(C * K * K / (float) TILE_WIDTH);
@@ -79,56 +73,57 @@ __global__ void conv_forward_kernel(float *y, const float *x, const int B, const
 
     float sum = 0.0;
 
-    const int w_unrolled = h * W_out + w;
-
+    
     for (int i = 0; i < numBlocks; ++i){
         int tileCol = i * TILE_WIDTH + tx; // For the kernel
         int tileRow = i * TILE_WIDTH + ty; // for the input
 
-        // Kernel indexing
-        int Ky = W_BASE * h;
-        int Kx = i * TILE_WIDTH;
-
         // input matrix shared memeory
 
-        int c = tileRow / (K * K);
+        int X_c = tileRow / (K * K);
 
         int temp = tileRow % (K * K) ;
-        int p =  temp / K;
-        int q = temp % K;
+        int X_p =  temp / K;
+        int X_q = temp % K;
+        
+        int X_h = col / W_out;
+        int X_w = col % W_out;
 
-        int xY = m;
+        int K_m = row;
+        int K_c = tileCol / (K * K);
+        int K_h = (tileCol % (K * K)) / K;
+        int K_w = (tileCol % (K * K)) % K;
 
-        if(tileRow < W_BASE && w_unrolled < H_out * W_out){
-            rowShared[ty][tx] = x4d(b, c, h + p , w + q);
+        if(tileRow < W_BASE && col < H_out * W_out){
+            colShared[ty][tx] = x4d(b, X_c, X_h + X_p , X_w + X_q);
         }else{
-            rowShared[ty][tx] = 0.0f;            
+            colShared[ty][tx] = 0.0f;            
         }
 
-        if(tileCol < W_BASE && xY < M){
-            colShared[ty][tx] = k4d(m , c, p, q);
+        if(tileCol < W_BASE && K_m < M){
+            rowShared[ty][tx] = k4d(K_m , K_c, K_h, K_w);
         }else{
-            colShared[ty][tx] = 0.0f;
+            rowShared[ty][tx] = 0.0f;
         }
 
         __syncthreads();
 
-        
-        float kVal = 0.0f;
         for(int k = 0; k < TILE_WIDTH; ++k){
-            // int kIndex = Kx + k + Ky;
-
-            // if(Kx < W_BASE){
-            //     kVal = Mc[kIndex]; 
-            // }else {
-            //     kVal = 0.0f;
-            // }
-
-            sum += colShared[ty][tx] * rowShared[ty][tx];            
+            sum += colShared[k][tx] * rowShared[ty][k];            
         }
 
         __syncthreads();
     }
+
+    int new_b = b;
+    int new_m = row;
+    int new_h = col / W_out;
+    int new_w = col % W_out;
+
+    if(new_m < M && col < W_out * H_out){
+        y4d(new_b, new_m, new_h, new_w) = sum;
+    }
+
 
 #undef y4d
 #undef x4d
@@ -168,14 +163,10 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_y, const float *devic
     const unsigned int H_out = H - K + 1;
     const unsigned int W_out = W - K + 1;
 
-    const unsigned int W_grid  = ceil(W_out / (float) TILE_WIDTH);
-    const unsigned int H_grid = ceil(H_out / (float) TILE_WIDTH);
     const unsigned int M_ = ceil(M / (float) TILE_WIDTH);
 
-    const unsigned Y = H_grid * W_grid;
-
     dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
-    dim3 gridDim( Y, M, B);
+    dim3 gridDim( ceil((W_out * H_out) / (float) ( TILE_WIDTH)), M, B);
 
     conv_forward_kernel<<<gridDim,  blockDim >>>(device_y, device_x,  B, M , C, H, W, K);
 }
