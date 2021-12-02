@@ -69,74 +69,65 @@ __global__ void conv_forward_kernel(float *y, const float *x, const int B, const
     int h = (blockIdx.z / W_grid) * blockDim.y + ty;
     int w = (blockIdx.z % W_grid) * blockDim.x + tx;
 
-    __shared__ float tile[4][SHARE_WIDTH][SHARE_WIDTH];
+    __shared__ float rowShared[TILE_WIDTH][TILE_WIDTH];
 
-    if(w >= 0 && w < W && h >=0 && h < H){
-        for (int c = 0 ; c < C; ++c)
-            tile[c][ty][tx] = x4d(b, c, h, w);
-    }
-    else{
-        for (int c = 0 ; c < C; ++c)
-            tile[c][ty][tx] = 0.0f;
-    }
+    __shared__ float colShared[TILE_WIDTH][TILE_WIDTH];
 
-    if(tx < K - 1){
-         int temp_x =  w + TILE_WIDTH;
+    const unsigned int numBlocks = ceil(C * K * K / (float) TILE_WIDTH);
 
-        if(temp_x >= 0 && temp_x < W && h >= 0 && h < H ){
-            for (int c = 0 ; c < C; ++c)
-                tile[c][ty][tx + TILE_WIDTH] = x4d(b, c, h, temp_x);
-        }
-        else{
-            
-            for (int c = 0 ; c < C; ++c)
-                tile[c][ty][tx + TILE_WIDTH] = 0.0f;
-        }
-    }
-    if(ty < K - 1){
-         int temp_y =  h + TILE_WIDTH;
+    const unsigned int W_BASE = C * K * K;
 
-        if( temp_y >= 0 && temp_y < H && w >= 0 && w < W){
-            for (int c = 0 ; c < C; ++c)
-                tile[c][ty+ TILE_WIDTH][tx ] = x4d(b, c, temp_y, w);
-        }
-        else{
-            
-            for (int c = 0 ; c < C; ++c)
-                tile[c][ty+ TILE_WIDTH][tx ] = 0.0f;
-        }
-    }
+    float sum = 0.0;
 
-    if(tx < K - 1 && ty < K - 1){
-        int temp_x =  w + TILE_WIDTH;
-        int temp_y = h + TILE_WIDTH;
+    const int w_unrolled = h * W_out + w;
 
-        if(temp_y >= 0 && temp_y < H && temp_x >= 0 && temp_x < W){
-            for (int c = 0 ; c < C; ++c)
-                tile[c][ty + TILE_WIDTH][tx + TILE_WIDTH] = x4d(b, c, temp_y, temp_x);
-        }
-        else{
-            for (int c = 0 ; c < C; ++c)
-                tile[c][ty + TILE_WIDTH][tx + TILE_WIDTH] = 0.0f;
-        }
-    }
-     __syncthreads();
+    for (int i = 0; i < numBlocks; ++i){
+        int tileCol = i * TILE_WIDTH + tx; // For the kernel
+        int tileRow = i * TILE_WIDTH + ty; // for the input
 
-    
-    if (w < W_out && h < H_out){
-        float convolution = 0.0f;
-        for (int c = 0; c < C; ++c)
-        {
-            for (int y_ = 0; y_ < K; ++y_)
-            {
-                for (int x_ = 0; x_ < K; ++x_)
-                {
-                    convolution +=  k4d(m, c, y_, x_) * tile[c][ty + y_][tx + x_];
-                }
-            }
+        // Kernel indexing
+        int Ky = W_BASE * h;
+        int Kx = i * TILE_WIDTH;
+
+        // input matrix shared memeory
+
+        int c = tileRow / (K * K);
+
+        int temp = tileRow % (K * K) ;
+        int p =  temp / K;
+        int q = temp % K;
+
+        int xY = m;
+
+        if(tileRow < W_BASE && w_unrolled < H_out * W_out){
+            rowShared[ty][tx] = x4d(b, c, h + p , w + q);
+        }else{
+            rowShared[ty][tx] = 0.0f;            
         }
 
-        y4d(b, m, h, w)  = convolution;
+        if(tileCol < W_BASE && xY < M){
+            colShared[ty][tx] = k4d(m , c, p, q);
+        }else{
+            colShared[ty][tx] = 0.0f;
+        }
+
+        __syncthreads();
+
+        
+        float kVal = 0.0f;
+        for(int k = 0; k < TILE_WIDTH; ++k){
+            // int kIndex = Kx + k + Ky;
+
+            // if(Kx < W_BASE){
+            //     kVal = Mc[kIndex]; 
+            // }else {
+            //     kVal = 0.0f;
+            // }
+
+            sum += colShared[ty][tx] * rowShared[ty][tx];            
+        }
+
+        __syncthreads();
     }
 
 #undef y4d
@@ -179,11 +170,12 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_y, const float *devic
 
     const unsigned int W_grid  = ceil(W_out / (float) TILE_WIDTH);
     const unsigned int H_grid = ceil(H_out / (float) TILE_WIDTH);
+    const unsigned int M_ = ceil(M / (float) TILE_WIDTH);
 
     const unsigned Y = H_grid * W_grid;
 
     dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
-    dim3 gridDim( B, M, Y);
+    dim3 gridDim( Y, M, B);
 
     conv_forward_kernel<<<gridDim,  blockDim >>>(device_y, device_x,  B, M , C, H, W, K);
 }
