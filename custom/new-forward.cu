@@ -162,7 +162,7 @@ __host__ void GPUInterface::conv_forward_gpu(float *device_y, const float *devic
     const unsigned int M_ = ceil(M / (float) TILE_WIDTH);
 
     dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
-    dim3 gridDim( ceil((W_out * H_out) / (float) ( TILE_WIDTH)), M, B);
+    dim3 gridDim( ceil((W_out * H_out) / (float) ( TILE_WIDTH)), M_, B);
 
     conv_forward_kernel<<<gridDim,  blockDim >>>(device_y, device_x,  B, M , C, H, W, K);
 }
