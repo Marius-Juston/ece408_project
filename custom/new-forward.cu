@@ -14,10 +14,6 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 
 
 #define TILE_WIDTH 16
-#define MASK_WIDTH 7
-#define MASK_RADIUS MASK_WIDTH / 2
-#define SHARE_WIDTH TILE_WIDTH + MASK_RADIUS * 2
-
 
 __constant__ float Mc[3136];
 
