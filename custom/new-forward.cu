@@ -13,7 +13,7 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 }
 
 
-#define TILE_WIDTH 8
+#define TILE_WIDTH 16
 #define TILE_WIDTH_2 32
 
 #define MASK_WIDTH 7
@@ -185,7 +185,7 @@ __global__ void conv_forward_kernel_2(float *y, const float *x, const int B, con
 
     const unsigned int b = blockIdx.z;
 
-    // const unsigned int row = blockIdx.y * TILE_WIDTH_2 + ty;
+    const unsigned int row = blockIdx.y * TILE_WIDTH_2 + ty;
     const unsigned int col = blockIdx.x * TILE_WIDTH_2 + tx;
 
     // __shared__ float rowShared[TILE_WIDTH_2][TILE_WIDTH_2];
@@ -203,7 +203,7 @@ __global__ void conv_forward_kernel_2(float *y, const float *x, const int B, con
     const unsigned int X_w = col % W_out;
     
     for (int i = 0; i < numBlocks; ++i){
-        const unsigned int tileCol = i * TILE_WIDTH_2 + tx; // For the kernel
+        // const unsigned int tileCol = i * TILE_WIDTH_2 + tx; // For the kernel
         const unsigned int tileRow = i * TILE_WIDTH_2 + ty; // for the input
 
         // input matrix shared memeory
