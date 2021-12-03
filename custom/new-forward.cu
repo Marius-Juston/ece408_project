@@ -1,6 +1,7 @@
 #include <cmath>
 #include <iostream>
 #include "gpu-new-forward.h"
+#include <cuda_fp16.h>
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -256,6 +257,127 @@ __global__ void conv_forward_kernel_2(float *y, const float *x, const int B, con
 
     if(compute){        
         y4d(b, row, X_h, X_w) = sum;
+    }
+
+
+#undef y4d
+#undef x4d
+#undef k4d
+}
+
+
+
+__global__ void conv_forward_kernel_2_half(float *y, const float *x, const int B, const int M, const int C, const int H, const int W, const int K)
+{
+    /*
+    Modify this function to implement the forward pass described in Chapter 16.
+    We have added an additional dimension to the tensors to support an entire mini-batch
+    The goal here is to be correct AND fast.
+
+    Function paramter definitions:
+    y - output
+    x - input
+    k - kernel
+    B - batch_size (number of images in x)
+    M - number of output feature maps
+    C - number of input feature maps
+    H - input height dimension
+    W - input width dimension
+    K - kernel height and width (K x K)
+    */
+
+    const int H_out = H - K + 1;
+    const int W_out = W - K + 1;
+    // (void)H_out; // silence declared but never referenced warning. remove this line when you start working
+    // (void)W_out; // silence declared but never referenced warning. remove this line when you start working
+
+    // We have some nice #defs for you below to simplify indexing. Feel free to use them, or create your own.
+    // An example use of these macros:
+    // float a = y4d(0,0,0,0)
+    // y4d(0,0,0,0) = a
+
+#define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
+#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
+#define k4d(i3, i2, i1, i0) Mc[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
+
+    // Insert your GPU convolution kernel code here
+
+    const unsigned int ty = threadIdx.y;
+    const unsigned int tx = threadIdx.x;
+
+    const unsigned int b = blockIdx.z;
+
+    const unsigned int row = blockIdx.y * TILE_WIDTH_2 + ty;
+    const unsigned int col = blockIdx.x * TILE_WIDTH_2 + tx;
+
+    // __shared__ float rowShared[TILE_WIDTH_2][TILE_WIDTH_2];
+    __shared__ __half2 colShared[TILE_WIDTH_2][TILE_WIDTH_2];
+
+    const unsigned int numBlocks = ceil(C * K * K / (float) TILE_WIDTH_2);
+
+    const unsigned int W_BASE = C * K * K;
+
+    __half2 sum = __float2half2_rn(0.0f);
+
+    const bool compute = row < M && col < W_out * H_out; 
+
+    const unsigned int X_h = col / W_out;
+    const unsigned int X_w = col % W_out;
+    
+    for (int i = 0; i < numBlocks; ++i){
+        // const unsigned int tileCol = i * TILE_WIDTH_2 + tx; // For the kernel
+        const unsigned int tileRow = i * TILE_WIDTH_2 + ty; // for the input
+
+        // input matrix shared memeory
+
+        if(tileRow < W_BASE && col < H_out * W_out){
+            const unsigned int temp = tileRow % (K * K) ;
+            const unsigned int X_p =  temp / K;
+            const unsigned int X_q = temp % K;
+
+            colShared[ty][tx] = __float2half2_rn(x4d(b, tileRow / (K * K), X_h + X_p , X_w + X_q));
+        }else{
+            colShared[ty][tx] = __float2half2_rn(0.0f);            
+        }
+
+        // if(tileCol < W_BASE && row < M){
+        //     const unsigned int K_c = tileCol / (K * K);
+
+        //     const unsigned int temp = (tileCol % (K * K)); 
+        //     const unsigned int K_h =  temp / K;
+        //     const unsigned int K_w = temp % K;
+
+        //     rowShared[ty][tx] = k4d(row , K_c, K_h, K_w);
+        // }else{
+        //     rowShared[ty][tx] = 0.0f;
+        // }
+
+        __syncthreads();
+
+        if(compute){
+
+
+            int tileKernel;
+            int K_c;
+            int temp;
+            int K_h;
+            int K_w;
+            for(int k = 0; k < TILE_WIDTH_2; ++k){
+                tileKernel = i * TILE_WIDTH_2 + k;
+                K_c = tileKernel / (K * K);
+                temp = (tileKernel % (K * K)); 
+                K_h =  temp / K;
+                K_w = temp % K;
+
+                sum += __hfma2(colShared[k][tx] , __float2half2_rn(k4d(row , K_c, K_h, K_w)), sum);            
+                // sum += colShared[k][tx] * rowShared[ty][k];  
+            }
+        }
+        __syncthreads();
+    }
+
+    if(compute){        
+        y4d(b, row, X_h, X_w) = __high2float(sum);
     }
 
 
