@@ -18,6 +18,7 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 __constant__ float Mc[3136];
 
 __global__ void conv_forward_kernel(float *y, const float *x, const int B, const int M, const int C, const int H, const int W, const int K)
+__global__ void conv_forward_kernel_2(float *y, const float *x, const int B, const int M, const int C, const int H, const int W, const int K)
 {
     /*
     Modify this function to implement the forward pass described in Chapter 16.
@@ -57,13 +58,13 @@ __global__ void conv_forward_kernel(float *y, const float *x, const int B, const
 
     const unsigned int b = blockIdx.z;
 
-    const unsigned int row = blockIdx.y * TILE_WIDTH + ty;
-    const unsigned int col = blockIdx.x * TILE_WIDTH + tx;
+    // const unsigned int row = blockIdx.y * TILE_WIDTH_2 + ty;
+    const unsigned int col = blockIdx.x * TILE_WIDTH_2 + tx;
 
-    __shared__ float rowShared[TILE_WIDTH][TILE_WIDTH];
-    __shared__ float colShared[TILE_WIDTH][TILE_WIDTH];
+    // __shared__ float rowShared[TILE_WIDTH_2][TILE_WIDTH_2];
+    __shared__ float colShared[TILE_WIDTH_2][TILE_WIDTH_2];
 
-    const unsigned int numBlocks = ceil(C * K * K / (float) TILE_WIDTH);
+    const unsigned int numBlocks = ceil(C * K * K / (float) TILE_WIDTH_2);
 
     const unsigned int W_BASE = C * K * K;
 
@@ -75,8 +76,8 @@ __global__ void conv_forward_kernel(float *y, const float *x, const int B, const
     const unsigned int X_w = col % W_out;
     
     for (int i = 0; i < numBlocks; ++i){
-        const unsigned int tileCol = i * TILE_WIDTH + tx; // For the kernel
-        const unsigned int tileRow = i * TILE_WIDTH + ty; // for the input
+        const unsigned int tileCol = i * TILE_WIDTH_2 + tx; // For the kernel
+        const unsigned int tileRow = i * TILE_WIDTH_2 + ty; // for the input
 
         // input matrix shared memeory
 
@@ -90,23 +91,37 @@ __global__ void conv_forward_kernel(float *y, const float *x, const int B, const
             colShared[ty][tx] = 0.0f;            
         }
 
-        if(tileCol < W_BASE && row < M){
-            const unsigned int K_c = tileCol / (K * K);
+        // if(tileCol < W_BASE && row < M){
+        //     const unsigned int K_c = tileCol / (K * K);
 
-            const unsigned int temp = (tileCol % (K * K)); 
-            const unsigned int K_h =  temp / K;
-            const unsigned int K_w = temp % K;
+        //     const unsigned int temp = (tileCol % (K * K)); 
+        //     const unsigned int K_h =  temp / K;
+        //     const unsigned int K_w = temp % K;
 
-            rowShared[ty][tx] = k4d(row , K_c, K_h, K_w);
-        }else{
-            rowShared[ty][tx] = 0.0f;
-        }
+        //     rowShared[ty][tx] = k4d(row , K_c, K_h, K_w);
+        // }else{
+        //     rowShared[ty][tx] = 0.0f;
+        // }
 
         __syncthreads();
 
         if(compute){
-            for(int k = 0; k < TILE_WIDTH; ++k){
-                sum += colShared[k][tx] * rowShared[ty][k];            
+
+
+            int tileKernel;
+            int K_c;
+            int temp;
+            int K_h;
+            int K_w;
+            for(int k = 0; k < TILE_WIDTH_2; ++k){
+                tileKernel = i * TILE_WIDTH_2 + k;
+                K_c = tileKernel / (K * K);
+                temp = (tileKernel % (K * K)); 
+                K_h =  temp / K;
+                K_w = temp % K;
+
+                sum += colShared[k][tx] * k4d(row , K_c, K_h, K_w);            
+                // sum += colShared[k][tx] * rowShared[ty][k];  
             }
         }
         __syncthreads();
@@ -121,7 +136,6 @@ __global__ void conv_forward_kernel(float *y, const float *x, const int B, const
 #undef x4d
 #undef k4d
 }
-
 	
 __host__ void GPUInterface::conv_forward_gpu_prolog(const float *host_y, const float *host_x, const float *host_k, float **device_y_ptr, float **device_x_ptr, float **device_k_ptr, const int B, const int M, const int C, const int H, const int W, const int K)
 {
